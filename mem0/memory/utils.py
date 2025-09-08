@@ -1,11 +1,15 @@
 import hashlib
 import re
 
-from mem0.configs.prompts import FACT_RETRIEVAL_PROMPT
+from mem0.configs.prompts import FACT_RETRIEVAL_PROMPT, EVENT_RETRIEVAL_PROMPT
 
 
 def get_fact_retrieval_messages(message):
     return FACT_RETRIEVAL_PROMPT, f"Input:\n{message}"
+
+
+def get_event_retrieval_messages(message):
+    return EVENT_RETRIEVAL_PROMPT, f"Input:\n{message}"
 
 
 def parse_messages(messages):

@@ -8,7 +8,7 @@ import os
 import uuid
 import warnings
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 import pytz
@@ -26,6 +26,7 @@ from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import capture_event
 from mem0.memory.utils import (
     get_fact_retrieval_messages,
+    get_event_retrieval_messages,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -147,6 +148,16 @@ class Memory(MemoryBase):
         else:
             self.graph = None
 
+        # Initialize Event vector store if enabled
+        if self.config.enable_event_memory:
+            event_config = deepcopy(self.config.vector_store.config)
+            event_config.collection_name = f"{self.collection_name}{self.config.event_memory_collection_suffix}"
+            self.event_vector_store = VectorStoreFactory.create(
+                self.config.vector_store.provider, event_config
+            )
+        else:
+            self.event_vector_store = None
+
         telemetry_config = deepcopy(self.config.vector_store.config)
         telemetry_config.collection_name = "mem0migrations"
         if self.config.vector_store.provider in ["faiss", "qdrant"]:
@@ -256,14 +267,30 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Profile memory processing
             future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
-            future2 = executor.submit(self._add_to_graph, messages, effective_filters)
+            
+            # Event memory processing
+            future2 = executor.submit(
+                self._add_event_to_vector_store, messages, processed_metadata, effective_filters, infer
+            ) if self.config.enable_event_memory else None
+            
+            # Graph processing
+            future3 = executor.submit(self._add_to_graph, messages, effective_filters)
+            
+            # Wait for all tasks to complete
+            futures = [future1, future3]
+            if future2:
+                futures.append(future2)
+            concurrent.futures.wait(futures)
+            
+            profile_result = future1.result()
+            event_result = future2.result() if future2 else []
+            graph_result = future3.result()
 
-            concurrent.futures.wait([future1, future2])
-
-            vector_store_result = future1.result()
-            graph_result = future2.result()
-
+        # Merge Profile and Event results
+        combined_results = profile_result + event_result
+        
         if self.api_version == "v1.0":
             warnings.warn(
                 "The current add API output format is deprecated. "
@@ -272,15 +299,15 @@ class Memory(MemoryBase):
                 category=DeprecationWarning,
                 stacklevel=2,
             )
-            return vector_store_result
+            return combined_results
 
         if self.enable_graph:
             return {
-                "results": vector_store_result,
+                "results": combined_results,
                 "relations": graph_result,
             }
 
-        return {"results": vector_store_result}
+        return {"results": combined_results}
 
     def _add_to_vector_store(self, messages, metadata, filters, infer):
         if not infer:
@@ -461,6 +488,132 @@ class Memory(MemoryBase):
             added_entities = self.graph.add(data, filters)
 
         return added_entities
+
+    def _add_event_to_vector_store(self, messages, metadata, filters, infer):
+        """Add Event memories to vector store"""
+        
+        if not self.config.enable_event_memory or not self.event_vector_store:
+            return []
+        
+        if not infer:
+            # Direct storage mode: store all non-system messages as events
+            return self._store_raw_events(messages, metadata)
+        
+        # Smart extraction mode
+        parsed_messages = parse_messages(messages)
+        
+        # Use Event-specific prompt
+        if self.config.custom_event_extraction_prompt:
+            system_prompt = self.config.custom_event_extraction_prompt
+            user_prompt = f"Input:\n{parsed_messages}"
+        else:
+            system_prompt, user_prompt = get_event_retrieval_messages(parsed_messages)
+        
+        # LLM event extraction
+        response = self.llm.generate_response(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            response = remove_code_blocks(response)
+            extracted_events = json.loads(response).get("events", [])
+        except Exception as e:
+            logger.error(f"Error extracting events: {e}")
+            extracted_events = []
+        
+        if not extracted_events:
+            logger.debug("No events extracted from messages")
+            return []
+        
+        # Store extracted events
+        returned_events = []
+        current_time = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        
+        for event_text in extracted_events[:self.config.event_max_facts]:
+            event_metadata = deepcopy(metadata)
+            event_metadata["memory_type"] = MemoryType.EVENT.value
+            event_metadata["event_timestamp"] = current_time
+            
+            # Generate embedding and store
+            embeddings = self.embedding_model.embed(event_text, "add")
+            memory_id = self._create_event_memory(event_text, embeddings, event_metadata)
+            
+            returned_events.append({
+                "id": memory_id,
+                "memory": event_text,
+                "event": "ADD",
+                "memory_type": MemoryType.EVENT.value,
+                "event_timestamp": current_time
+            })
+        
+        return returned_events
+
+    def _store_raw_events(self, messages, metadata):
+        """Store raw messages as events directly"""
+        returned_events = []
+        current_time = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        
+        for message_dict in messages:
+            if (message_dict.get("role") == "system" or 
+                not isinstance(message_dict, dict) or
+                not message_dict.get("content")):
+                continue
+                
+            event_metadata = deepcopy(metadata)
+            event_metadata["memory_type"] = MemoryType.EVENT.value
+            event_metadata["event_timestamp"] = current_time
+            event_metadata["role"] = message_dict["role"]
+            
+            if message_dict.get("name"):
+                event_metadata["actor_id"] = message_dict["name"]
+            
+            content = message_dict["content"]
+            embeddings = self.embedding_model.embed(content, "add")
+            memory_id = self._create_event_memory(content, embeddings, event_metadata)
+            
+            returned_events.append({
+                "id": memory_id,
+                "memory": content,
+                "event": "ADD",
+                "memory_type": MemoryType.EVENT.value,
+                "role": message_dict["role"],
+                "event_timestamp": current_time
+            })
+        
+        return returned_events
+
+    def _create_event_memory(self, data, embeddings, metadata):
+        """Create Event memory"""
+        memory_id = str(uuid.uuid4())
+        metadata["data"] = data
+        metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
+        
+        if "created_at" not in metadata:
+            metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        
+        self.event_vector_store.insert(
+            vectors=[embeddings],
+            ids=[memory_id],
+            payloads=[metadata]
+        )
+        
+        # Record history (reuse existing history table, distinguish by memory_type)
+        self.db.add_history(
+            memory_id,
+            None,
+            data,
+            "ADD",
+            created_at=metadata.get("created_at"),
+            actor_id=metadata.get("actor_id"),
+            role=metadata.get("role")
+        )
+        
+        capture_event("mem0._create_event_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
+        return memory_id
 
     def get(self, memory_id):
         """
@@ -661,20 +814,36 @@ class Memory(MemoryBase):
         )
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
-            future_graph_entities = (
-                executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
-            )
+            # Profile memory search
+            future_profile = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
+            
+            # Event memory search
+            future_event = executor.submit(
+                self._search_event_vector_store, query, effective_filters, limit, threshold
+            ) if self.config.enable_event_memory else None
+            
+            # Graph search
+            future_graph = executor.submit(
+                self.graph.search, query, effective_filters, limit
+            ) if self.enable_graph else None
 
-            concurrent.futures.wait(
-                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
-            )
+            # Wait for completion
+            futures = [future_profile]
+            if future_event:
+                futures.append(future_event)
+            if future_graph:
+                futures.append(future_graph)
+            concurrent.futures.wait(futures)
 
-            original_memories = future_memories.result()
-            graph_entities = future_graph_entities.result() if future_graph_entities else None
+            profile_memories = future_profile.result()
+            event_memories = future_event.result() if future_event else []
+            graph_entities = future_graph.result() if future_graph else None
+
+        # Merge search results
+        all_memories = self._merge_search_results(profile_memories, event_memories)
 
         if self.enable_graph:
-            return {"results": original_memories, "relations": graph_entities}
+            return {"results": all_memories, "relations": graph_entities}
 
         if self.api_version == "v1.0":
             warnings.warn(
@@ -684,9 +853,9 @@ class Memory(MemoryBase):
                 category=DeprecationWarning,
                 stacklevel=2,
             )
-            return {"results": original_memories}
+            return {"results": all_memories}
         else:
-            return {"results": original_memories}
+            return {"results": all_memories}
 
     def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
         embeddings = self.embedding_model.embed(query, "search")
@@ -725,6 +894,107 @@ class Memory(MemoryBase):
                 original_memories.append(memory_item_dict)
 
         return original_memories
+
+    def _search_event_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+        """Search Event memories"""
+        if not self.event_vector_store:
+            return []
+        
+        embeddings = self.embedding_model.embed(query, "search")
+        
+        # Add time window filtering
+        time_threshold = datetime.now(pytz.timezone("US/Pacific")) - timedelta(
+            days=self.config.event_time_window_days
+        )
+        
+        # Add memory type filter to only search Event memories
+        event_filters = {**filters, "memory_type": MemoryType.EVENT.value}
+        
+        # Search Event memories
+        memories = self.event_vector_store.search(
+            query=query,
+            vectors=embeddings,
+            limit=limit,
+            filters=event_filters
+        )
+        
+        # Process results format
+        promoted_payload_keys = [
+            "user_id",
+            "agent_id", 
+            "run_id",
+            "actor_id",
+            "role",
+        ]
+        
+        core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "memory_type", "event_timestamp", *promoted_payload_keys}
+        
+        formatted_memories = []
+        for mem in memories:
+            # Time filtering
+            event_time_str = mem.payload.get("event_timestamp")
+            if event_time_str:
+                try:
+                    # Handle both timezone-aware and naive timestamps
+                    if event_time_str.endswith('Z'):
+                        event_time_str = event_time_str[:-1] + '+00:00'
+                    event_time = datetime.fromisoformat(event_time_str)
+                    if event_time.tzinfo is None:
+                        event_time = pytz.timezone("US/Pacific").localize(event_time)
+                    
+                    # Convert threshold to same timezone
+                    if event_time < time_threshold:
+                        continue
+                except Exception as e:
+                    logger.warning(f"Error parsing event timestamp {event_time_str}: {e}")
+                    # If we can't parse the timestamp, include the memory anyway
+            
+            if threshold is None or mem.score >= threshold:
+                memory_item_dict = MemoryItem(
+                    id=mem.id,
+                    memory=mem.payload["data"],
+                    hash=mem.payload.get("hash"),
+                    created_at=mem.payload.get("created_at"),
+                    updated_at=mem.payload.get("updated_at"),
+                    score=mem.score,
+                ).model_dump()
+                
+                # Add promoted payload keys
+                for key in promoted_payload_keys:
+                    if key in mem.payload:
+                        memory_item_dict[key] = mem.payload[key]
+                
+                # Add Event-specific fields
+                memory_item_dict["memory_type"] = MemoryType.EVENT.value
+                if "event_timestamp" in mem.payload:
+                    memory_item_dict["event_timestamp"] = mem.payload["event_timestamp"]
+                
+                # Add additional metadata
+                additional_metadata = {k: v for k, v in mem.payload.items() if k not in core_and_promoted_keys}
+                if additional_metadata:
+                    memory_item_dict["metadata"] = additional_metadata
+                
+                formatted_memories.append(memory_item_dict)
+        
+        return formatted_memories
+
+    def _merge_search_results(self, profile_memories, event_memories):
+        """Merge Profile and Event search results"""
+        # All memories list
+        all_memories = []
+        
+        # Add type identifier to Profile memories
+        for memory in profile_memories:
+            memory["memory_type"] = "profile_memory"
+            all_memories.append(memory)
+        
+        # Event memories already have type identifier
+        all_memories.extend(event_memories)
+        
+        # Sort by score descending
+        all_memories.sort(key=lambda x: x.get("score", 0), reverse=True)
+        
+        return all_memories
 
     def update(self, memory_id, data):
         """

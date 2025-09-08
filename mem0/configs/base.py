@@ -59,6 +59,27 @@ class MemoryConfig(BaseModel):
         description="Custom prompt for the update memory",
         default=None,
     )
+    # Event memory configuration
+    enable_event_memory: bool = Field(
+        description="Whether to enable event memory processing",
+        default=True,
+    )
+    event_memory_collection_suffix: str = Field(
+        description="Suffix for event memory collection name",
+        default="_events",
+    )
+    event_time_window_days: int = Field(
+        description="Time window in days for event memory search",
+        default=30,
+    )
+    event_max_facts: int = Field(
+        description="Maximum number of events to extract per add operation",
+        default=5,
+    )
+    custom_event_extraction_prompt: Optional[str] = Field(
+        description="Custom prompt for event extraction",
+        default=None,
+    )
 
 
 class AzureConfig(BaseModel):
