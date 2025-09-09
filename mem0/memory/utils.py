@@ -8,8 +8,30 @@ def get_fact_retrieval_messages(message):
     return FACT_RETRIEVAL_PROMPT, f"Input:\n{message}"
 
 
-def get_event_retrieval_messages(message):
-    return EVENT_RETRIEVAL_PROMPT, f"Input:\n{message}"
+def get_event_retrieval_messages(message, metadata=None):
+    """
+    Get event retrieval messages with optional metadata context
+    
+    Args:
+        message: The parsed message content
+        metadata: Optional metadata dictionary containing context information
+    
+    Returns:
+        tuple: (system_prompt, user_prompt)
+    """
+    # Build metadata context string if metadata is provided
+    metadata_context = ""
+    if metadata:
+        metadata_items = []
+        for key, value in metadata.items():
+            if key not in ['data', 'hash', 'created_at', 'updated_at']:  # Skip internal fields
+                metadata_items.append(f"- {key}: {value}")
+        
+        if metadata_items:
+            metadata_context = f"\n\nAdditional Context:\n" + "\n".join(metadata_items)
+    
+    user_prompt = f"Input:\n{message}{metadata_context}"
+    return EVENT_RETRIEVAL_PROMPT, user_prompt
 
 
 def parse_messages(messages):

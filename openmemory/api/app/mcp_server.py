@@ -178,22 +178,21 @@ async def search_memory(query: str) -> str:
                 filters=filters,
             )
 
-            allowed = set(str(mid) for mid in accessible_memory_ids) if accessible_memory_ids else None
+            allowed_ids = {str(mid) for mid in accessible_memory_ids}
 
             results = []
             for h in hits:
                 # All vector db search functions return OutputData class
                 id, score, payload = h.id, h.score, h.payload
-                if allowed and h.id is None or h.id not in allowed: 
-                    continue
                 
                 results.append({
-                    "id": id, 
-                    "memory": payload.get("data"), 
+                    "id": id,
+                    "memory": payload.get("data"),
                     "hash": payload.get("hash"),
-                    "created_at": payload.get("created_at"), 
-                    "updated_at": payload.get("updated_at"), 
+                    "created_at": payload.get("created_at"),
+                    "updated_at": payload.get("updated_at"),
                     "score": score,
+                    "accessible": id in allowed_ids,
                 })
 
             for r in results: 
@@ -241,46 +240,34 @@ async def list_memories() -> str:
 
             # Get all memories
             memories = memory_client.get_all(user_id=uid)
-            filtered_memories = []
-
-            # Filter memories based on permissions
+            # Get accessible memory IDs
             user_memories = db.query(Memory).filter(Memory.user_id == user.id).all()
-            accessible_memory_ids = [memory.id for memory in user_memories if check_memory_access_permissions(db, memory, app.id)]
-            if isinstance(memories, dict) and 'results' in memories:
-                for memory_data in memories['results']:
-                    if 'id' in memory_data:
-                        memory_id = uuid.UUID(memory_data['id'])
-                        if memory_id in accessible_memory_ids:
-                            # Create access log entry
-                            access_log = MemoryAccessLog(
-                                memory_id=memory_id,
-                                app_id=app.id,
-                                access_type="list",
-                                metadata_={
-                                    "hash": memory_data.get('hash')
-                                }
-                            )
-                            db.add(access_log)
-                            filtered_memories.append(memory_data)
-                db.commit()
-            else:
-                for memory in memories:
-                    memory_id = uuid.UUID(memory['id'])
-                    memory_obj = db.query(Memory).filter(Memory.id == memory_id).first()
-                    if memory_obj and check_memory_access_permissions(db, memory_obj, app.id):
-                        # Create access log entry
-                        access_log = MemoryAccessLog(
-                            memory_id=memory_id,
-                            app_id=app.id,
-                            access_type="list",
-                            metadata_={
-                                "hash": memory.get('hash')
-                            }
-                        )
-                        db.add(access_log)
-                        filtered_memories.append(memory)
-                db.commit()
-            return json.dumps(filtered_memories, indent=2)
+            accessible_memory_ids = {memory.id for memory in user_memories if check_memory_access_permissions(db, memory, app.id)}
+
+            results = []
+            memories_list = memories.get('results') if isinstance(memories, dict) and 'results' in memories else memories
+
+            for memory_data in memories_list:
+                if 'id' not in memory_data:
+                    continue
+                
+                memory_id = uuid.UUID(memory_data['id'])
+                
+                # Add accessible flag
+                memory_data['accessible'] = memory_id in accessible_memory_ids
+                
+                # Create access log entry for each listed memory
+                access_log = MemoryAccessLog(
+                    memory_id=memory_id,
+                    app_id=app.id,
+                    access_type="list",
+                    metadata_={"hash": memory_data.get('hash')}
+                )
+                db.add(access_log)
+                results.append(memory_data)
+
+            db.commit()
+            return json.dumps(results, indent=2)
         finally:
             db.close()
     except Exception as e:

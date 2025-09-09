@@ -87,3 +87,12 @@ app.include_router(backup_router)
 
 # Add pagination support
 add_pagination(app)
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8765,
+        log_level="info"
+    )

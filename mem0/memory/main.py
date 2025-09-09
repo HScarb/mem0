@@ -507,7 +507,7 @@ class Memory(MemoryBase):
             system_prompt = self.config.custom_event_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_event_retrieval_messages(parsed_messages)
+            system_prompt, user_prompt = get_event_retrieval_messages(parsed_messages, metadata)
         
         # LLM event extraction
         response = self.llm.generate_response(

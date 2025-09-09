@@ -51,7 +51,7 @@ class MemoryResponse(BaseModel):
     categories: List[str]
     metadata_: Optional[dict] = None
 
-    @validator('created_at', pre=True)
+    # @validator('created_at', pre=True)
     def convert_to_epoch(cls, v):
         if isinstance(v, datetime):
             return int(v.timestamp())

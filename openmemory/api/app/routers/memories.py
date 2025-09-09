@@ -589,7 +589,7 @@ async def filter_memories(
             MemoryResponse(
                 id=memory.id,
                 content=memory.content,
-                created_at=memory.created_at,
+                created_at=int(memory.created_at.timestamp()),
                 state=memory.state.value,
                 app_id=memory.app_id,
                 app_name=memory.app.name if memory.app else None,
@@ -647,7 +647,7 @@ async def get_related_memories(
             MemoryResponse(
                 id=memory.id,
                 content=memory.content,
-                created_at=memory.created_at,
+                created_at=int(memory.created_at.timestamp()),
                 state=memory.state.value,
                 app_id=memory.app_id,
                 app_name=memory.app.name if memory.app else None,
