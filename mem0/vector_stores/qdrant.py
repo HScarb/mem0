@@ -31,6 +31,8 @@ class Qdrant(VectorStoreBase):
         url: str = None,
         api_key: str = None,
         on_disk: bool = False,
+        verify: bool = True,
+        prefer_grpc: bool = False,
     ):
         """
         Initialize the Qdrant vector store.
@@ -58,6 +60,10 @@ class Qdrant(VectorStoreBase):
             if host and port:
                 params["host"] = host
                 params["port"] = port
+            if not verify:
+                params["verify"] = verify
+            if prefer_grpc:
+                params["prefer_grpc"] = prefer_grpc
             
             if not params:
                 params["path"] = path

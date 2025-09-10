@@ -375,6 +375,7 @@ class Memory(MemoryBase):
         retrieved_old_memory = []
         new_message_embeddings = {}
         for new_mem in new_retrieved_facts:
+            logger.info("New fact: %s", new_mem)
             messages_embeddings = self.embedding_model.embed(new_mem, "add")
             new_message_embeddings[new_mem] = messages_embeddings
             existing_memories = self.vector_store.search(
@@ -534,6 +535,7 @@ class Memory(MemoryBase):
         current_time = datetime.now(pytz.timezone("US/Pacific")).isoformat()
         
         for event_text in extracted_events[:self.config.event_max_facts]:
+            logger.info("New event: %s", event_text)
             event_metadata = deepcopy(metadata)
             event_metadata["memory_type"] = MemoryType.EVENT.value
             event_metadata["event_timestamp"] = current_time

@@ -11,19 +11,17 @@ from prompts import ANSWER_PROMPT, ANSWER_PROMPT_GRAPH
 from tqdm import tqdm
 
 from mem0 import MemoryClient
+from src.memzero.client import mem0_client, chat_openai
 
 load_dotenv()
 
 
 class MemorySearch:
     def __init__(self, output_path="results.json", top_k=10, filter_memories=False, is_graph=False):
-        self.mem0_client = MemoryClient(
-            api_key=os.getenv("MEM0_API_KEY"),
-            org_id=os.getenv("MEM0_ORGANIZATION_ID"),
-            project_id=os.getenv("MEM0_PROJECT_ID"),
-        )
+        self.mem0_client = mem0_client
         self.top_k = top_k
         self.openai_client = OpenAI()
+        self.llm = chat_openai
         self.results = defaultdict(list)
         self.output_path = output_path
         self.filter_memories = filter_memories
@@ -44,14 +42,11 @@ class MemorySearch:
                     memories = self.mem0_client.search(
                         query,
                         user_id=user_id,
-                        top_k=self.top_k,
-                        filter_memories=self.filter_memories,
-                        enable_graph=True,
-                        output_format="v1.1",
+                        limit=self.top_k,
                     )
                 else:
                     memories = self.mem0_client.search(
-                        query, user_id=user_id, top_k=self.top_k, filter_memories=self.filter_memories
+                        query, user_id=user_id, limit=self.top_k
                     )
                 break
             except Exception as e:
@@ -69,7 +64,7 @@ class MemorySearch:
                     "timestamp": memory["metadata"]["timestamp"],
                     "score": round(memory["score"], 2),
                 }
-                for memory in memories
+                for memory in memories["results"]
             ]
             graph_memories = None
         else:
@@ -110,13 +105,11 @@ class MemorySearch:
         )
 
         t1 = time.time()
-        response = self.openai_client.chat.completions.create(
-            model=os.getenv("MODEL"), messages=[{"role": "system", "content": answer_prompt}], temperature=0.0
-        )
+        response = self.llm.invoke([{"role": "system", "content": answer_prompt}])
         t2 = time.time()
         response_time = t2 - t1
         return (
-            response.choices[0].message.content,
+            response.content,
             speaker_1_memories,
             speaker_2_memories,
             speaker_1_memory_time,

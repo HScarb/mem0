@@ -6,8 +6,10 @@ import numpy as np
 from openai import OpenAI
 
 from mem0.memory.utils import extract_json
+from src.memzero.client import chat_openai
 
-client = OpenAI()
+# client = OpenAI()
+llm = chat_openai
 
 ACCURACY_PROMPT = """
 Your task is to label an answer to a question as ’CORRECT’ or ’WRONG’. You will be given the following data:
@@ -29,29 +31,34 @@ Question: {question}
 Gold answer: {gold_answer}
 Generated answer: {generated_answer}
 
-First, provide a short (one sentence) explanation of your reasoning, then finish with CORRECT or WRONG. 
-Do NOT include both CORRECT and WRONG in your response, or it will break the evaluation script.
-
 Just return the label CORRECT or WRONG in a json format with the key as "label".
 """
 
 
 def evaluate_llm_judge(question, gold_answer, generated_answer):
     """Evaluate the generated answer against the gold answer using an LLM judge."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": ACCURACY_PROMPT.format(
-                    question=question, gold_answer=gold_answer, generated_answer=generated_answer
-                ),
-            }
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.0,
-    )
-    label = json.loads(extract_json(response.choices[0].message.content))["label"]
+    # response = client.chat.completions.create(
+    #     model="gpt-4o-mini",
+    #     messages=[
+    #         {
+    #             "role": "user",
+    #             "content": ACCURACY_PROMPT.format(
+    #                 question=question, gold_answer=gold_answer, generated_answer=generated_answer
+    #             ),
+    #         }
+    #     ],
+    #     response_format={"type": "json_object"},
+    #     temperature=0.0,
+    # )
+    response = chat_openai.invoke([
+        {
+            "role": "user",
+            "content": ACCURACY_PROMPT.format(
+                question=question, gold_answer=gold_answer, generated_answer=generated_answer
+            ),
+        }
+    ])
+    label = json.loads(extract_json(response.content))["label"]
     return 1 if label == "CORRECT" else 0
 
 

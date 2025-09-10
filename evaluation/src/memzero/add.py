@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from mem0 import MemoryClient
+from src.memzero.client import mem0_client
 
 load_dotenv()
 
@@ -44,13 +44,7 @@ Generate personal memories that follow these guidelines:
 
 class MemoryADD:
     def __init__(self, data_path=None, batch_size=2, is_graph=False):
-        self.mem0_client = MemoryClient(
-            api_key=os.getenv("MEM0_API_KEY"),
-            org_id=os.getenv("MEM0_ORGANIZATION_ID"),
-            project_id=os.getenv("MEM0_PROJECT_ID"),
-        )
-
-        self.mem0_client.update_project(custom_instructions=custom_instructions)
+        self.mem0_client = mem0_client
         self.batch_size = batch_size
         self.data_path = data_path
         self.data = None
@@ -67,7 +61,7 @@ class MemoryADD:
         for attempt in range(retries):
             try:
                 _ = self.mem0_client.add(
-                    message, user_id=user_id, version="v2", metadata=metadata, enable_graph=self.is_graph
+                    message, user_id=user_id, metadata=metadata
                 )
                 return
             except Exception as e:
@@ -117,11 +111,11 @@ class MemoryADD:
             # add memories for the two users on different threads
             thread_a = threading.Thread(
                 target=self.add_memories_for_speaker,
-                args=(speaker_a_user_id, messages, timestamp, "Adding Memories for Speaker A"),
+                args=(speaker_a_user_id, messages, timestamp, "Adding Memories for Speaker A in session {}".format(key)),
             )
             thread_b = threading.Thread(
                 target=self.add_memories_for_speaker,
-                args=(speaker_b_user_id, messages_reverse, timestamp, "Adding Memories for Speaker B"),
+                args=(speaker_b_user_id, messages_reverse, timestamp, "Adding Memories for Speaker B in session {}".format(key)),
             )
 
             thread_a.start()
